@@ -1,0 +1,81 @@
+# .github/workflows/main.yml (Versión Final Segura)
+name: Weekly Qwen Cookie Refresh & Update Render
+on:
+  schedule:
+    - cron: "0 3 * * 0" # Todos los domingos a las 3:00 AM UTC
+  workflow_dispatch: # Permite ejecución manual
+jobs:
+  refresh-and-update:
+    name: Refresh Cookie and Update Render Env Var
+    runs-on: ubuntu-latest
+    environment: Qwen
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+      USERNAME: ${{ secrets.USERNAME }}
+      PASSWORD: ${{ secrets.PASSWORD }}
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies and Tools
+        run: |
+          python -m pip install --upgrade pip
+          sudo apt-get update && sudo apt-get install -y xvfb jq curl
+          pip install -r requirements.txt
+
+      - name: Run Selenium Script to Get Cookies
+        run: |
+          echo "🔄 Ejecutando script de Selenium para obtener cookies..."
+          xvfb-run -a python main.py
+          if [ ! -s cookies.json ]; then
+            echo "::error::El archivo 'cookies.json' no fue creado o está vacío."
+            exit 1
+          fi
+          echo "✅ Archivo 'cookies.json' generado correctamente."
+
+      - name: Update Env Var on Render and Trigger Redeployment
+        run: |
+          echo "🔄 Codificando cookies a Base64..."
+          B64_COOKIES=$(base64 -w 0 cookies.json)
+          if [ -z "$B64_COOKIES" ]; then
+            echo "::error::No se pudieron codificar las cookies."
+            exit 1
+          fi
+          echo "✅ Cookies codificadas (longitud: ${#B64_COOKIES} caracteres)"
+          
+          echo "🔄 Actualizando la variable de entorno 'QWEN_COOKIES_JSON_B64' en Render..."
+          # Este payload ahora es seguro porque las otras variables están en un Environment Group
+          JSON_PAYLOAD=$(printf '[{"key": "QWEN_COOKIES_JSON_B64", "value": "%s"}]' "$B64_COOKIES")
+          
+          curl --fail -X PUT "https://api.render.com/v1/services/$RENDER_SERVICE_ID/env-vars" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d "$JSON_PAYLOAD"
+
+          echo "✅ Variable de entorno actualizada correctamente en Render."
+          
+          echo "🚀 Iniciando redespliegue del servicio para aplicar los cambios..."
+          
+          # CORRECCIÓN FINAL: Se cambió '{"clearCache": "no"}' por '{"clearCache": false}'
+          curl --fail -X POST "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            --data '{"clearCache": "do_not_clear"}'
+            
+          echo "✅ Redespliegue iniciado en Render."
+          echo "🎯 Proceso completado exitosamente!"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "🧹 Limpiando archivos temporales..."
+          rm -f cookies.json
+          echo "✅ Cleanup completado."
